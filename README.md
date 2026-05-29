@@ -14,9 +14,36 @@ electrical KPIs:
 | Implant dose `[1e14, 5e15] cm⁻²` | Sheet resistance `Rs` Ω/sq |
 | RTA peak temperature `[1223, 1373] K` | Junction depth `Xj` nm |
 | RTA dwell time `[0.5, 30] s`     |                          |
-| Chamber pressure `[1, 760] Torr` |                          |
+| O₂ partial pressure `[0.01, 10] Torr` |                     |
 
 No real wafer data, no proprietary tools, no company specifics.
+
+## Physics model (after independent review)
+
+The first cut of this example was flagged on four points by an
+independent reviewer. Three are now fixed in the model, one is
+documented as a known limitation:
+
+- **Dose-dependent `Xj` — fixed.** `Xj` is the depth where the Gaussian
+  profile crosses substrate background doping `N_bg`:
+  `Cs = (dose * f_act) / sqrt(pi * D_eff * t)`,
+  `Xj = sqrt(4 * D_eff * t * ln(Cs/N_bg))`.
+- **Transient enhanced diffusion (TED) — fixed.** Implant damage drives
+  a self-interstitial supersaturation that enhances B diffusivity by
+  10–100× until the `{311}` defects dissolve. Modeled as
+  `D_eff = D_eq(T) * (1 + A_TED*(dose/dose0)^p_TED * exp(-t/tau_311(T)))`
+  with `tau_311(T) = tau0_311 * exp(Ea_311/kT)`, `Ea_311 ≈ 3.6 eV`.
+- **Thermal-budget constraint — fixed.** The old `T·t ≤ const` is
+  dimensionally nonsense (kelvins added to seconds) and ranks spike
+  vs. soak the wrong way around. Replaced with the time-integrated
+  effective diffusivity `D_eff · t ≤ (Dt)_max` (cm²), which is the
+  industry-standard proxy and correctly says a 1373 K spike for 0.5 s
+  busts a budget that a 1248 K soak for 5 s respects.
+- **Pressure chemistry — partially fixed.** Total chamber pressure was
+  the wrong variable; the knob is now O₂ partial pressure (balance
+  N₂). Other species (H₂O, H₂, NH₃) are still implicitly fixed — a
+  production surrogate would either constrain to one gas chemistry
+  per chamber-class or add those partial pressures.
 
 ## Repo layout
 
@@ -58,14 +85,14 @@ server needed.
    marginal axis is uniformly covered. Log-space the knobs that span
    decades. 40 simulator calls is enough to calibrate to ~1 % on Rs.
 2. **Fit equations you already trust.** The functional form is dictated
-   by device physics (Arrhenius diffusion, stretched activation
-   kinetics, Caughey–Thomas mobility roll-off). Only the eight
-   coefficients are learned from data.
+   by device physics (Arrhenius diffusion + TED, stretched activation
+   kinetics, Caughey–Thomas mobility roll-off, Gaussian-profile
+   junction depth). Twelve coefficients are learned from data.
 3. **Evaluate everywhere.** The fitted model is a few lines of
    arithmetic. Sweep, score, and search in microseconds per query.
 4. **Optimize under real constraints.** Wrap the surrogate in SLSQP with
-   the actual process limits (thermal budget, junction-depth ceiling,
-   knob bounds) and pull yield back into spec.
+   the actual process limits (Dt-integral thermal budget,
+   junction-depth ceiling, knob bounds) and pull yield back into spec.
 
 ## Three surrogates, side by side
 
@@ -80,9 +107,12 @@ random grid plus a deliberate out-of-box stress test:
   small NN learns the multiplicative residual. This is the pattern most
   production virtual-metrology stacks land on.
 
-A typical run gives Rs MAPE ≈ 0.8 % (physics) / 2.7 % (NN) / 1.9 %
-(hybrid) in-distribution, and the NN error roughly **4×** when pushed
-5 % beyond the training T range; physics and hybrid stay close to 1 %.
+A typical run gives Rs MAPE ≈ **0.98 % (physics) / 7.72 % (NN) /
+2.18 % (hybrid)** in-distribution. When T is pushed 5 % beyond the
+training upper bound the NN error climbs to **18.9 %** on Rs while
+physics stays at 1.9 % and hybrid at 5.8 % — the extrapolation story
+is more pronounced now that TED introduces sharp nonlinearity that
+small black-box models do not generalize well.
 
 ## Where AI models / agents enter
 

@@ -28,7 +28,7 @@ sys.path.insert(0, str(HERE))
 
 from config import (
     INPUT_NAMES, INPUT_BOUNDS,
-    RS_TARGET, RS_TOL, XJ_MAX, THERMAL_BUDGET_MAX,
+    RS_TARGET, RS_TOL, XJ_MAX, DT_BUDGET_MAX,
 )
 import sampling
 import ground_truth as gt
@@ -57,7 +57,7 @@ def random_grid(n, seed):
     cols = {}
     for name in INPUT_NAMES:
         lo, hi = INPUT_BOUNDS[name]
-        if name in ("dose", "t_anneal", "P_chamber"):
+        if name in ("dose", "t_anneal", "pO2"):
             cols[name] = np.exp(rng.uniform(np.log(lo), np.log(hi), size=n))
         else:
             cols[name] = rng.uniform(lo, hi, size=n)
@@ -80,7 +80,7 @@ def main():
     train_X = sampling.latin_hypercube(n_train, seed=rng_seed)
     sim     = gt.simulate(
         train_X["dose"], train_X["T_anneal"],
-        train_X["t_anneal"], train_X["P_chamber"],
+        train_X["t_anneal"], train_X["pO2"],
         noise=0.025, rng=rng_seed,
     )
     train = train_X.copy()
@@ -102,12 +102,12 @@ def main():
     test_X = random_grid(n_test, seed=rng_seed + 1)
     test_truth = gt.simulate(
         test_X["dose"], test_X["T_anneal"],
-        test_X["t_anneal"], test_X["P_chamber"],
+        test_X["t_anneal"], test_X["pO2"],
         noise=0.0,
     )
     phys_pred = pm.predict(
         phys, test_X["dose"], test_X["T_anneal"],
-        test_X["t_anneal"], test_X["P_chamber"],
+        test_X["t_anneal"], test_X["pO2"],
     )
     nn_pred  = nm.predict(nn, test_X)
     hyb_pred = hyb.predict(test_X)
@@ -132,13 +132,13 @@ def main():
     extrap = test_X.copy()
     extrap["T_anneal"] = INPUT_BOUNDS["T_anneal"][1] * 1.05
     extrap_truth = gt.simulate(
-        extrap["dose"], extrap["T_anneal"], extrap["t_anneal"], extrap["P_chamber"],
+        extrap["dose"], extrap["T_anneal"], extrap["t_anneal"], extrap["pO2"],
         noise=0.0,
     )
     extrap_scores = {
         "physics":    {"Rs": metrics(extrap_truth["Rs"],
                                      pm.predict(phys, extrap["dose"], extrap["T_anneal"],
-                                                extrap["t_anneal"], extrap["P_chamber"])["Rs"])},
+                                                extrap["t_anneal"], extrap["pO2"])["Rs"])},
         "neural_net": {"Rs": metrics(extrap_truth["Rs"], nm.predict(nn, extrap)["Rs"])},
         "hybrid":     {"Rs": metrics(extrap_truth["Rs"], hyb.predict(extrap)["Rs"])},
     }
@@ -146,32 +146,32 @@ def main():
     # ---- Step 4: optimize a yield-recovery recipe with the hybrid model
     def predict_hyb(df):  return hyb.predict(df)
     def predict_phys(df):
-        out = pm.predict(phys, df["dose"], df["T_anneal"], df["t_anneal"], df["P_chamber"])
+        out = pm.predict(phys, df["dose"], df["T_anneal"], df["t_anneal"], df["pO2"])
         return {"Rs": out["Rs"], "Xj": out["Xj"]}
 
-    recipe_hybrid = opt.optimize(predict_hyb,  n_restarts=20, seed=11)
-    recipe_phys   = opt.optimize(predict_phys, n_restarts=20, seed=12)
+    recipe_hybrid = opt.optimize(predict_hyb,  phys, n_restarts=24, seed=11)
+    recipe_phys   = opt.optimize(predict_phys, phys, n_restarts=24, seed=12)
 
     # Verify the recommended recipe against the (here-known) ground truth
     for rec in (recipe_hybrid, recipe_phys):
         truth = gt.simulate(rec["dose"], rec["T_anneal"], rec["t_anneal"],
-                            rec["P_chamber"], noise=0.0)
+                            rec["pO2"], noise=0.0)
         rec["Rs_truth"] = float(truth["Rs"][0])
         rec["Xj_truth"] = float(truth["Xj"][0])
 
-    # ---- 1-D scan for the website plot: sweep T at the optimized dose/time/P
+    # ---- 1-D scan for the website plot: sweep T at the optimized dose/time/pO2
     T_grid = np.linspace(INPUT_BOUNDS["T_anneal"][0], INPUT_BOUNDS["T_anneal"][1], 60)
     base = recipe_hybrid
     scan_df = pd.DataFrame({
-        "dose":      np.full_like(T_grid, base["dose"]),
-        "T_anneal":  T_grid,
-        "t_anneal":  np.full_like(T_grid, base["t_anneal"]),
-        "P_chamber": np.full_like(T_grid, base["P_chamber"]),
+        "dose":     np.full_like(T_grid, base["dose"]),
+        "T_anneal": T_grid,
+        "t_anneal": np.full_like(T_grid, base["t_anneal"]),
+        "pO2":      np.full_like(T_grid, base["pO2"]),
     })
     truth_scan = gt.simulate(scan_df["dose"], scan_df["T_anneal"],
-                             scan_df["t_anneal"], scan_df["P_chamber"], noise=0.0)
+                             scan_df["t_anneal"], scan_df["pO2"], noise=0.0)
     phys_scan = pm.predict(phys, scan_df["dose"], scan_df["T_anneal"],
-                           scan_df["t_anneal"], scan_df["P_chamber"])
+                           scan_df["t_anneal"], scan_df["pO2"])
     nn_scan   = nm.predict(nn, scan_df)
     hyb_scan  = hyb.predict(scan_df)
 
@@ -183,10 +183,10 @@ def main():
             "bounds":  INPUT_BOUNDS,
             "outputs": ["Rs (Ohm/sq)", "Xj (nm)"],
             "spec": {
-                "Rs_target": RS_TARGET,
-                "Rs_tol":    RS_TOL,
-                "Xj_max":    XJ_MAX,
-                "thermal_budget_max": THERMAL_BUDGET_MAX,
+                "Rs_target":     RS_TARGET,
+                "Rs_tol":        RS_TOL,
+                "Xj_max":        XJ_MAX,
+                "Dt_budget_max": DT_BUDGET_MAX,
             },
         },
         "training": {

@@ -121,6 +121,13 @@ p, li { color: var(--ink); }
   border-color: var(--accent);
   box-shadow: 0 0 0 1px rgba(78,161,255,0.15);
 }
+.card.limitations {
+  border-color: var(--warn);
+  background: linear-gradient(180deg, rgba(243,183,92,0.05) 0%, var(--panel) 60%);
+}
+.card.limitations .sub { color: var(--ink-dim); margin: 4px 0 10px; }
+.card.limitations ul { padding-left: 18px; margin: 6px 0 0; }
+.card.limitations li { margin: 6px 0; }
 .grid { display: grid; gap: 14px; }
 .grid.two   { grid-template-columns: 1fr 1fr; }
 .grid.three { grid-template-columns: 1fr 1fr 1fr; }

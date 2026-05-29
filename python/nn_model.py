@@ -18,7 +18,7 @@ def _features(df):
         np.log10(df["dose"].to_numpy()),
         df["T_anneal"].to_numpy(),
         np.log10(df["t_anneal"].to_numpy()),
-        np.log10(df["P_chamber"].to_numpy()),
+        np.log10(df["pO2"].to_numpy()),
     ])
     return X
 

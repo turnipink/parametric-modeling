@@ -49,17 +49,28 @@
         <tr><td>Implant dose</td><td>$10^{14}$–$5\!\times\!10^{15}$ cm$^{-2}$</td></tr>
         <tr><td>RTA peak temperature</td><td>1223–1373 K (~950–1100 &deg;C)</td></tr>
         <tr><td>RTA dwell time</td><td>0.5–30 s</td></tr>
-        <tr><td>Chamber pressure</td><td>1–760 Torr</td></tr>
+        <tr><td>O$_2$ partial pressure</td><td>0.01&ndash;10 Torr (balance N$_2$)</td></tr>
       </table>
     </div>
     <div class="card">
       <h3>KPIs (outputs)</h3>
       <table class="kv">
-        <tr><td>Sheet resistance $R_s$</td><td id="spec-rs">target loading…</td></tr>
-        <tr><td>Junction depth $X_j$</td><td id="spec-xj">target loading…</td></tr>
-        <tr><td>Thermal budget</td><td id="spec-tb">limit loading…</td></tr>
+        <tr><td>Sheet resistance $R_s$</td><td id="spec-rs">target loading&hellip;</td></tr>
+        <tr><td>Junction depth $X_j$</td><td id="spec-xj">target loading&hellip;</td></tr>
+        <tr><td>Thermal budget $D_{\text{eff}}\!\cdot\!t$</td><td id="spec-tb">limit loading&hellip;</td></tr>
       </table>
     </div>
+  </div>
+
+  <div class="card limitations">
+    <h3>Known modeling gaps (and what changed after independent review)</h3>
+    <p class="sub">Half the value of a surrogate is knowing where it lies. The first cut of this example failed an independent review on four points; three are fixed in the current model, one is documented.</p>
+    <ul>
+      <li><strong>Dose-dependent $X_j$ &mdash; fixed.</strong> The old $X_j=2\sqrt{Dt}$ form was independent of dose, which is wrong at corners. Now $X_j$ is the depth where the Gaussian profile crosses substrate background doping $N_{bg}$, so doubling the dose correctly pushes $X_j$ deeper.</li>
+      <li><strong>Transient enhanced diffusion (TED) &mdash; fixed.</strong> Implant damage creates a self-interstitial supersaturation (Frank&ndash;Turnbull / kick-out) that enhances B diffusivity by 10&times;&ndash;100&times; until the {311} clusters dissolve. Equilibrium Arrhenius alone underestimates $X_j$ by an order of magnitude at $t<10$ s. Now modeled explicitly with a {311}-dissolution time constant.</li>
+      <li><strong>Thermal-budget constraint &mdash; fixed.</strong> $T\cdot t \le \text{const}$ is dimensionally nonsense (you cannot add kelvins and seconds) and ranks spike vs. soak the wrong way around. Replaced with the time-integrated effective diffusivity $\int D_{\text{eff}}\,dt$ (cm$^2$), which is dimensionally correct and now says &mdash; correctly &mdash; that a 1373 K spike for 0.5 s busts a budget that a 1248 K soak for 5 s respects.</li>
+      <li><strong>Pressure chemistry &mdash; partially fixed.</strong> Total chamber pressure was the wrong variable; 1 Torr N$_2$ and 2 Torr O$_2$ behave very differently. The knob is now $p_{O_2}$ (O$_2$ partial pressure, balance N$_2$). Other species (H$_2$O, H$_2$, NH$_3$) are still implicitly fixed &mdash; a real production surrogate would either constrain to a single gas chemistry per chamber-class or add the relevant partial pressures.</li>
+    </ul>
   </div>
 
   <h2>The four-step workflow</h2>
@@ -150,18 +161,23 @@ def latin_hypercube(n, bounds, log_knobs, seed=7):
 
   <div class="card eqcard">
     <h3>Surrogate equations</h3>
-    <p>Diffusivity (Arrhenius):</p>
-    <p>$$D(T) \;=\; D_0\,\exp\!\left(-\dfrac{E_{a,\text{diff}}}{k_B T}\right)$$</p>
-    <p>Junction depth (Gaussian diffusion):</p>
-    <p>$$X_j \;=\; 2\,\sqrt{D(T)\,t}$$</p>
-    <p>Activation fraction (stretched exponential kinetics):</p>
+    <p>Equilibrium diffusivity (Arrhenius):</p>
+    <p>$$D_{\text{eq}}(T) \;=\; D_0\,\exp\!\left(-\dfrac{E_{a,\text{diff}}}{k_B T}\right)$$</p>
+    <p>Transient enhanced diffusion (TED) &mdash; {311} cluster dissolution:</p>
+    <p>$$\tau_{311}(T) \;=\; \tau_0^{311}\,e^{\,E_a^{311}/k_BT}, \qquad
+         E_{\text{TED}}(T,t,\text{dose}) \;=\; 1 + A_{\text{TED}}\,\left(\dfrac{\text{dose}}{\text{dose}_0}\right)^{\!p_{\text{TED}}}\,e^{-t/\tau_{311}(T)}$$</p>
+    <p>$$D_{\text{eff}}(T,t,\text{dose}) \;=\; D_{\text{eq}}(T)\cdot E_{\text{TED}}(T,t,\text{dose})$$</p>
+    <p>Activation fraction (stretched-exponential kinetics):</p>
     <p>$$f_{\text{act}}(T,t) \;=\; 1 - \exp\!\left[-\left(\dfrac{t}{\tau_0\,e^{\,E_{a,\text{act}}/k_BT}}\right)^{\beta}\right]$$</p>
-    <p>Mobility roll-off (Caughey&ndash;Thomas form), with $N_a = \text{dose}\cdot f_{\text{act}}/X_j$:</p>
+    <p>Dose-dependent junction depth (Gaussian tail crossing substrate background $N_{bg}$):</p>
+    <p>$$C_s = \dfrac{\text{dose}\cdot f_{\text{act}}}{\sqrt{\pi\,D_{\text{eff}}\,t}}, \qquad
+         X_j = \sqrt{4\,D_{\text{eff}}\,t\,\ln\!\left(\dfrac{C_s}{N_{bg}}\right)}$$</p>
+    <p>Mobility roll-off (Caughey&ndash;Thomas form, with $N_a = \text{dose}\cdot f_{\text{act}}/X_j$):</p>
     <p>$$\mu(N_a) \;=\; \dfrac{\mu_0}{1 + (N_a / N_{\text{ref}})^{\gamma}}$$</p>
-    <p>Sheet resistance with a weak ambient correction:</p>
-    <p>$$R_s \;=\; \dfrac{1}{q\,\text{dose}\,f_{\text{act}}\,\mu}\,\left(\dfrac{P}{P_0}\right)^{p_{\text{exp}}}$$</p>
-    <p>Eight unknown coefficients
-       $\theta=\{\log D_0,\,E_{a,\text{diff}},\,\log\tau_0,\,E_{a,\text{act}},\,\beta,\,\log\mu_0,\,\gamma,\,p_{\text{exp}}\}$
+    <p>Sheet resistance with weak surface-oxidation perturbation (O$_2$ partial pressure):</p>
+    <p>$$R_s \;=\; \dfrac{1}{q\,\text{dose}\,f_{\text{act}}\,\mu}\,\left(\dfrac{p_{O_2}}{p_{O_2}^{\text{ref}}}\right)^{p_{\text{exp}}}$$</p>
+    <p>Twelve unknown coefficients
+       $\theta=\{\log D_0, E_{a,\text{diff}},\,\log A_{\text{TED}}, p_{\text{TED}}, \log\tau_0^{311}, E_a^{311},\,\log\tau_0, E_{a,\text{act}}, \beta,\,\log\mu_0, \gamma,\,p_{\text{exp}}\}$
        are fit by bounded nonlinear least squares on $\log R_s$ and $\log X_j$.
     </p>
   </div>
@@ -248,10 +264,14 @@ res = least_squares(residuals, theta0, bounds=(lower, upper),
 
   <div class="card eqcard">
     <h3>Optimization problem</h3>
-    <p>$$\min_{\text{dose},T,t,P}\;\bigl(R_s(\text{dose},T,t,P)-R_s^{\text{target}}\bigr)^{2}$$</p>
+    <p>$$\min_{\text{dose},\,T,\,t,\,p_{O_2}}\;\bigl(R_s(\text{dose},T,t,p_{O_2})-R_s^{\text{target}}\bigr)^{2}$$</p>
     <p>subject to</p>
-    <p>$$X_j(\text{dose},T,t,P) \le X_j^{\max},\quad T\cdot t \le \text{TB}^{\max},\quad \text{knobs in their bounds.}$$</p>
-    <p>Solved with SLSQP from many random restarts to dodge local minima.</p>
+    <p>$$X_j(\text{dose},T,t,p_{O_2}) \le X_j^{\max},\quad D_{\text{eff}}(T,t,\text{dose})\cdot t \le (Dt)^{\max},\quad \text{knobs in their bounds.}$$</p>
+    <p>The $Dt$-budget constraint (cm$^2$) is the dimensionally-correct
+       replacement for the old $T\cdot t$ form &mdash; it correctly
+       penalizes spike anneals that would otherwise slip past a linear
+       $T\cdot t$ cap. Solved with SLSQP from many random restarts to
+       dodge local minima.</p>
   </div>
 
   <h3>Recommended recipe (hybrid surrogate)</h3>
@@ -260,7 +280,8 @@ res = least_squares(residuals, theta0, bounds=(lower, upper),
   <h3>Code</h3>
 <pre><code class="lang-python">cons = [
     {"type": "ineq", "fun": lambda x: XJ_MAX - predict_fn(_df(x))["Xj"][0]},
-    {"type": "ineq", "fun": lambda x: THERMAL_BUDGET_MAX - x[1]*x[2]},
+    {"type": "ineq", "fun": lambda x: DT_BUDGET_MAX -
+                                       D_eff_dt(phys, x[0], x[1], x[2])},
 ]
 
 def objective(x):
@@ -268,7 +289,7 @@ def objective(x):
 
 res = minimize(objective, x0, method="SLSQP",
                bounds=bounds, constraints=cons,
-               options={"maxiter": 200, "ftol": 1e-9})
+               options={"maxiter": 300, "ftol": 1e-9})
 </code></pre>
   <p class="ref">See <a href="python/optimize_recipe.py">python/optimize_recipe.py</a>.</p>
 </section>

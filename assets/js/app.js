@@ -77,7 +77,7 @@ function renderOverview(data) {
   document.getElementById("spec-xj").innerHTML =
     `&le; <strong>${sp.Xj_max}</strong> nm`;
   document.getElementById("spec-tb").innerHTML =
-    `T &times; t &le; <strong>${sp.thermal_budget_max.toLocaleString()}</strong> K&middot;s`;
+    `&le; <strong>${sp.Dt_budget_max.toExponential(1)}</strong> cm&sup2;`;
 }
 
 function renderLHSPlot(data) {
@@ -86,10 +86,10 @@ function renderLHSPlot(data) {
     {
       type: "splom",
       dimensions: [
-        { label: "log10(dose)",    values: s.dose.map(v => Math.log10(v)) },
-        { label: "T_anneal (K)",   values: s.T_anneal },
-        { label: "log10(t_anneal)",values: s.t_anneal.map(v => Math.log10(v)) },
-        { label: "log10(P_chamb)", values: s.P_chamber.map(v => Math.log10(v)) },
+        { label: "log10(dose)",     values: s.dose.map(v => Math.log10(v)) },
+        { label: "T_anneal (K)",    values: s.T_anneal },
+        { label: "log10(t_anneal)", values: s.t_anneal.map(v => Math.log10(v)) },
+        { label: "log10(pO2)",      values: s.pO2.map(v => Math.log10(v)) },
       ],
       marker: {
         color: s.Rs,
@@ -114,14 +114,18 @@ function renderPhysParams(data) {
   const p = data.physics_params;
   const fi = data.fit_info;
   const rows = [
-    ["log10(D0)  (cm²/s)",     p.log10_D0.toFixed(3)],
-    ["Ea_diff   (eV)",         p.Ea_diff.toFixed(3)],
-    ["log10(tau0) (s)",        p.log10_tau0.toFixed(3)],
-    ["Ea_act    (eV)",         p.Ea_act.toFixed(3)],
-    ["beta      (-)",          p.beta.toFixed(3)],
-    ["log10(mu0) (cm²/V·s)",   p.log10_mu0.toFixed(3)],
-    ["gamma     (-)",          p.gamma.toFixed(3)],
-    ["p_exp     (-)",          p.p_exp.toFixed(3)],
+    ["log10(D0)       (cm²/s)",       p.log10_D0.toFixed(3)],
+    ["Ea_diff         (eV)",          p.Ea_diff.toFixed(3)],
+    ["log10(A_TED)    (-)",           p.log10_A_TED.toFixed(3)],
+    ["p_TED           (-)",           p.p_TED.toFixed(3)],
+    ["log10(tau0_311) (s)",           p.log10_tau0_311.toFixed(3)],
+    ["Ea_311          (eV)",          p.Ea_311.toFixed(3)],
+    ["log10(tau0)     (s)",           p.log10_tau0.toFixed(3)],
+    ["Ea_act          (eV)",          p.Ea_act.toFixed(3)],
+    ["beta            (-)",           p.beta.toFixed(3)],
+    ["log10(mu0)      (cm²/V·s)",     p.log10_mu0.toFixed(3)],
+    ["gamma           (-)",           p.gamma.toFixed(3)],
+    ["p_exp           (-)",           p.p_exp.toFixed(3)],
   ];
   const w = Math.max(...rows.map(r => r[0].length));
   const body = rows.map(r => `  ${r[0].padEnd(w," ")}   ${r[1]}`).join("\n");
@@ -231,25 +235,26 @@ function renderRecipe(data) {
   const r = data.optimized_recipes.hybrid;
   const sp = data.process.spec;
   const inSpec = Math.abs(r.Rs_truth - sp.Rs_target) <= sp.Rs_tol
-                 && r.Xj_truth <= sp.Xj_max;
+                 && r.Xj_truth <= sp.Xj_max
+                 && r.Dt_budget <= sp.Dt_budget_max;
   const cls = (ok) => ok ? "ok" : "warn";
   const kpis = [
-    { label: "Implant dose",   value: fmt.sci(r.dose, 2),       unit: "cm⁻²"   },
-    { label: "Anneal T",       value: r.T_anneal.toFixed(1),    unit: "K"      },
-    { label: "Anneal time",    value: r.t_anneal.toFixed(2),    unit: "s"      },
-    { label: "Pressure",       value: r.P_chamber.toFixed(1),   unit: "Torr"   },
-    { label: "Predicted Rs",   value: r.Rs_pred.toFixed(2),     unit: "Ω/sq",
+    { label: "Implant dose",    value: fmt.sci(r.dose, 2),       unit: "cm⁻²"   },
+    { label: "Anneal T",        value: r.T_anneal.toFixed(1),    unit: "K"      },
+    { label: "Anneal time",     value: r.t_anneal.toFixed(2),    unit: "s"      },
+    { label: "O₂ partial press.",value: r.pO2.toFixed(2),         unit: "Torr"   },
+    { label: "Predicted Rs",    value: r.Rs_pred.toFixed(2),     unit: "Ω/sq",
       ok: Math.abs(r.Rs_pred - sp.Rs_target) <= sp.Rs_tol },
-    { label: "Predicted Xj",   value: r.Xj_pred.toFixed(2),     unit: "nm",
+    { label: "Predicted Xj",    value: r.Xj_pred.toFixed(2),     unit: "nm",
       ok: r.Xj_pred <= sp.Xj_max },
-    { label: "Re-simulated Rs",value: r.Rs_truth.toFixed(2),    unit: "Ω/sq",
+    { label: "Re-simulated Rs", value: r.Rs_truth.toFixed(2),    unit: "Ω/sq",
       ok: Math.abs(r.Rs_truth - sp.Rs_target) <= sp.Rs_tol },
-    { label: "Re-simulated Xj",value: r.Xj_truth.toFixed(2),    unit: "nm",
+    { label: "Re-simulated Xj", value: r.Xj_truth.toFixed(2),    unit: "nm",
       ok: r.Xj_truth <= sp.Xj_max },
-    { label: "Thermal budget", value: (r.T_anneal*r.t_anneal).toFixed(0),
-      unit: "K·s",
-      ok: r.T_anneal*r.t_anneal <= sp.thermal_budget_max },
-    { label: "In yield window",value: inSpec ? "YES" : "NO",    unit: "",
+    { label: "Dt budget",       value: r.Dt_budget.toExponential(2),
+      unit: "cm²",
+      ok: r.Dt_budget <= sp.Dt_budget_max },
+    { label: "In yield window", value: inSpec ? "YES" : "NO",    unit: "",
       ok: inSpec },
   ];
   const host = document.getElementById("recipe-card");

@@ -23,7 +23,7 @@ class HybridModel:
         phys_pred = pm.predict(
             self.phys,
             df_inputs["dose"], df_inputs["T_anneal"],
-            df_inputs["t_anneal"], df_inputs["P_chamber"],
+            df_inputs["t_anneal"], df_inputs["pO2"],
         )
         delta = nm.predict(self.residual, df_inputs)
         # residual model learned log-residuals — multiplicative correction
@@ -38,7 +38,7 @@ def fit(df_inputs, Rs_meas, Xj_meas):
     phys_pred = pm.predict(
         phys,
         df_inputs["dose"], df_inputs["T_anneal"],
-        df_inputs["t_anneal"], df_inputs["P_chamber"],
+        df_inputs["t_anneal"], df_inputs["pO2"],
     )
     # Residual targets: measured / physics-predicted (multiplicative)
     r_Rs = np.asarray(Rs_meas) / phys_pred["Rs"]
