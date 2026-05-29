@@ -59,6 +59,23 @@ _TRUE = dict(
     p_exp    = 0.05,
 )
 
+# --- Systematic effects structurally absent from the surrogate's equations ---
+# These represent real process physics a 12-parameter Arrhenius surrogate cannot
+# represent, giving the hybrid NN genuine residual signal to learn.
+#
+# (1) Dose-dependent activation saturation: boron-interstitial cluster (BIC)
+#     trapping reduces the electrically active fraction at high implant doses.
+#     The surrogate's f_act(T,t) has no dose dependence -- this is
+#     structurally unrepresentable by any combination of the 12 parameters.
+_C_SAT     = 0.10     # ±10 % activation correction across the dose range
+_LOG_D_CTR = 14.5     # log10 pivot ≈ 3e14 cm^-2 (centre of dose range)
+_LOG_D_SCL = 0.6      # width in decades of the saturation roll-off
+#
+# (2) Nonlinear O2 partial-pressure effect: Langmuir-type adsorption gives a
+#     quadratic correction in log(pO2) space that a pure power-law surrogate
+#     cannot fit.
+_C_QUAD    = 0.005    # ~+11 % at 0.01 Torr, ~+3 % at 10 Torr, 0 at 1 Torr
+
 
 def _D_eq(T):
     """Equilibrium Arrhenius diffusivity (cm^2/s)."""
@@ -102,7 +119,10 @@ def simulate(dose, T_anneal, t_anneal, pO2, noise=0.02, rng=None):
     pO2      = np.atleast_1d(np.asarray(pO2,      dtype=float))
 
     f_act      = _activation_fraction(T_anneal, t_anneal)
-    Na_sheet   = dose * f_act                                 # cm^-2
+    # BIC clustering: dose-dependent activation saturation
+    # (surrogate's f_act has no dose dependence -- structurally unrepresentable)
+    f_sat      = 1.0 - _C_SAT * np.tanh((np.log10(dose) - _LOG_D_CTR) / _LOG_D_SCL)
+    Na_sheet   = dose * f_act * np.clip(f_sat, 0.5, 1.5)    # cm^-2
     D_eff_arr  = _D_eff(T_anneal, t_anneal, dose)             # cm^2/s
     Dt         = D_eff_arr * t_anneal                          # cm^2
 
@@ -118,8 +138,11 @@ def simulate(dose, T_anneal, t_anneal, pO2, noise=0.02, rng=None):
     mu = _mobility(Na_bulk)
 
     Rs = 1.0 / (Q_E * Na_sheet * mu)
-    # Weak O2-partial-pressure perturbation (surface oxidation effect)
-    Rs = Rs * (pO2 / PO2_REF) ** _TRUE["p_exp"]
+    # pO2 effect: power-law base + nonlinear Langmuir correction in log(pO2)
+    # space.  The surrogate fits only the linear (power-law) term.
+    log_pO2_norm = np.log(pO2 / PO2_REF)
+    Rs = Rs * (pO2 / PO2_REF) ** _TRUE["p_exp"] \
+             * (1.0 + _C_QUAD * log_pO2_norm ** 2)
 
     if noise > 0:
         rng = (rng if isinstance(rng, np.random.Generator)
