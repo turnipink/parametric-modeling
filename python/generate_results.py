@@ -160,7 +160,8 @@ def main():
         rec["Xj_truth"] = float(truth["Xj"][0])
 
     # ---- 1-D scan for the website plot: sweep T at the optimized dose/time/pO2
-    T_grid = np.linspace(INPUT_BOUNDS["T_anneal"][0], INPUT_BOUNDS["T_anneal"][1], 60)
+    T_grid = np.linspace(INPUT_BOUNDS["T_anneal"][0],
+                         INPUT_BOUNDS["T_anneal"][1] * 1.05, 60)
     base = recipe_hybrid
     scan_df = pd.DataFrame({
         "dose":     np.full_like(T_grid, base["dose"]),
