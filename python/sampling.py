@@ -17,7 +17,7 @@ from scipy.stats import qmc
 from config import INPUT_BOUNDS, INPUT_NAMES
 
 # Which knobs should be sampled in log-space.
-_LOG_KNOBS = {"dose", "t_anneal", "P_chamber"}
+_LOG_KNOBS = {"dose", "t_anneal", "pO2"}
 
 
 def latin_hypercube(n_samples: int, seed: int = 7) -> pd.DataFrame:
