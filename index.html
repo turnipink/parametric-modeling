@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Parametric Surrogate Modeling for Virtual Metrology — Example</title>
+<link rel="stylesheet" href="assets/css/styles.css" />
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer
+        src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});">
+</script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">PM</span>
+    <div>
+      <div class="title">Parametric Surrogate Modeling</div>
+      <div class="subtitle">Virtual metrology for a post-implant RTA step — worked example</div>
+    </div>
+  </div>
+  <nav class="steps" id="stepnav"></nav>
+</header>
+
+<main id="main">
+
+<!-- ====================================================================== -->
+<section class="step" data-step="overview">
+  <h1>Overview</h1>
+  <p class="lede">
+    This example walks through how to replace an expensive process+device
+    simulator with a fast, physics-shaped surrogate that a fab can call
+    inline — for virtual metrology, recipe optimization, and yield
+    recovery. The process is intentionally narrow so the workflow stays
+    crisp: a single post-implant <strong>Rapid Thermal Anneal (RTA)</strong>
+    step for a shallow boron source/drain extension, with two electrical
+    KPIs (<em>sheet resistance</em> $R_s$ and <em>junction depth</em> $X_j$).
+  </p>
+
+  <div class="grid two">
+    <div class="card">
+      <h3>Recipe knobs (inputs)</h3>
+      <table class="kv">
+        <tr><td>Implant dose</td><td>$10^{14}$–$5\!\times\!10^{15}$ cm$^{-2}$</td></tr>
+        <tr><td>RTA peak temperature</td><td>1223–1373 K (~950–1100 &deg;C)</td></tr>
+        <tr><td>RTA dwell time</td><td>0.5–30 s</td></tr>
+        <tr><td>Chamber pressure</td><td>1–760 Torr</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>KPIs (outputs)</h3>
+      <table class="kv">
+        <tr><td>Sheet resistance $R_s$</td><td id="spec-rs">target loading…</td></tr>
+        <tr><td>Junction depth $X_j$</td><td id="spec-xj">target loading…</td></tr>
+        <tr><td>Thermal budget</td><td id="spec-tb">limit loading…</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h2>The four-step workflow</h2>
+  <ol class="workflow">
+    <li><strong>Sparse, smart sampling.</strong> Latin Hypercube the recipe
+      box so every projection of the input space is uniformly covered.
+      Each expensive simulation buys maximum information.</li>
+    <li><strong>Fit equations you already trust.</strong> The functional
+      form comes from device physics — Arrhenius diffusion, stretched
+      activation kinetics, mobility roll-off. Only the coefficients
+      are learned from data.</li>
+    <li><strong>Evaluate everywhere.</strong> The fitted model is a few
+      lines of arithmetic, so any new recipe is answered in microseconds.
+      Now you can sweep, score, and search.</li>
+    <li><strong>Optimize under real constraints.</strong> Wrap the surrogate
+      in an SLSQP solver with the actual process limits (thermal budget,
+      junction-depth ceiling, knob bounds) and pull yield back into spec.</li>
+  </ol>
+
+  <p class="hint">Click the step buttons at the top to walk through each stage.</p>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="step1">
+  <h1>Step 1 &mdash; Sparse sampling of the expensive simulator</h1>
+  <p>
+    The "expensive" simulator stands in for a coupled process+device TCAD
+    run that takes minutes to hours per point. We can only afford a few
+    dozen evaluations, so each one has to <em>buy information</em> rather
+    than provide locally-redundant coverage.
+  </p>
+
+  <div class="grid two">
+    <div class="card">
+      <h3>Latin Hypercube Sampling</h3>
+      <p>
+        LHS divides each input axis into $N$ equal-probability strata and
+        permutes points so that each stratum is hit exactly once. The
+        result: every 1-D projection is uniformly covered with $N$ points,
+        and 2-D projections are far better-spread than i.i.d. random.
+      </p>
+      <p>
+        For knobs that span orders of magnitude (dose, time, pressure)
+        we sample in log-space so the underlying multiplicative physics is
+        well-conditioned.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Why not full factorial?</h3>
+      <p>
+        4 knobs &times; 5 levels = 625 runs. At 30 minutes per CAE point
+        that's almost two weeks of compute for a single sweep. LHS at
+        $N{=}40$ gives a calibrated surrogate good to ~1% on the held-out
+        set (see Step 3) and finishes overnight.
+      </p>
+    </div>
+  </div>
+
+  <h3>The 40-point LHS plan (projections)</h3>
+  <div id="plot-lhs" class="plot tall"></div>
+
+  <h3>Code</h3>
+<pre><code class="lang-python">from scipy.stats import qmc
+
+def latin_hypercube(n, bounds, log_knobs, seed=7):
+    sampler = qmc.LatinHypercube(d=len(bounds), seed=seed)
+    u = sampler.random(n=n)                       # uniform [0,1]^d
+    out = {}
+    for j, (name, (lo, hi)) in enumerate(bounds.items()):
+        if name in log_knobs:
+            out[name] = np.exp(np.log(lo) + u[:, j]*(np.log(hi) - np.log(lo)))
+        else:
+            out[name] = lo + u[:, j]*(hi - lo)
+    return pd.DataFrame(out)
+</code></pre>
+  <p class="ref">See <a href="python/sampling.py">python/sampling.py</a> and
+    <a href="python/ground_truth.py">python/ground_truth.py</a>.</p>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="step2">
+  <h1>Step 2 &mdash; Fit physics-shaped equations, not a black box</h1>
+  <p>
+    For RTA of an implanted dopant, the functional form is dictated by
+    decades of device physics. We <em>fit coefficients</em>; we do not
+    invent topology.
+  </p>
+
+  <div class="card eqcard">
+    <h3>Surrogate equations</h3>
+    <p>Diffusivity (Arrhenius):</p>
+    <p>$$D(T) \;=\; D_0\,\exp\!\left(-\dfrac{E_{a,\text{diff}}}{k_B T}\right)$$</p>
+    <p>Junction depth (Gaussian diffusion):</p>
+    <p>$$X_j \;=\; 2\,\sqrt{D(T)\,t}$$</p>
+    <p>Activation fraction (stretched exponential kinetics):</p>
+    <p>$$f_{\text{act}}(T,t) \;=\; 1 - \exp\!\left[-\left(\dfrac{t}{\tau_0\,e^{\,E_{a,\text{act}}/k_BT}}\right)^{\beta}\right]$$</p>
+    <p>Mobility roll-off (Caughey&ndash;Thomas form), with $N_a = \text{dose}\cdot f_{\text{act}}/X_j$:</p>
+    <p>$$\mu(N_a) \;=\; \dfrac{\mu_0}{1 + (N_a / N_{\text{ref}})^{\gamma}}$$</p>
+    <p>Sheet resistance with a weak ambient correction:</p>
+    <p>$$R_s \;=\; \dfrac{1}{q\,\text{dose}\,f_{\text{act}}\,\mu}\,\left(\dfrac{P}{P_0}\right)^{p_{\text{exp}}}$$</p>
+    <p>Eight unknown coefficients
+       $\theta=\{\log D_0,\,E_{a,\text{diff}},\,\log\tau_0,\,E_{a,\text{act}},\,\beta,\,\log\mu_0,\,\gamma,\,p_{\text{exp}}\}$
+       are fit by bounded nonlinear least squares on $\log R_s$ and $\log X_j$.
+    </p>
+  </div>
+
+  <h3>Fitted coefficients</h3>
+  <div id="phys-params" class="card mono"></div>
+
+  <h3>Three modeling philosophies, side by side</h3>
+  <div class="grid three">
+    <div class="card">
+      <h4>Physics-only</h4>
+      <p>Eight interpretable coefficients with units. Extrapolates
+        gracefully because the Arrhenius shape <em>is</em> the truth at
+        first order. Bias-limited where second-order effects (tool
+        seasoning, chamber drift, edge wafer) live.</p>
+    </div>
+    <div class="card">
+      <h4>Neural-net (black box)</h4>
+      <p>Small MLP on log-transformed inputs. Fits anything, but
+        memorizes the LHS cloud, has zero opinion about Arrhenius shape,
+        and degrades fast outside the training box.</p>
+    </div>
+    <div class="card highlight">
+      <h4>Hybrid (physics + residual NN)</h4>
+      <p>Physics carries the bulk trend and extrapolation; a tiny NN
+        learns the multiplicative residual where reality and model
+        disagree. This is the pattern most production virtual-metrology
+        stacks land on.</p>
+    </div>
+  </div>
+
+  <h3>Code &mdash; fitting</h3>
+<pre><code class="lang-python">def residuals(theta, df, Rs_meas, Xj_meas):
+    p = PhysicsParams(*theta)
+    pred = predict(p, df["dose"], df["T_anneal"],
+                   df["t_anneal"], df["P_chamber"])
+    return np.concatenate([
+        np.log(pred["Rs"]) - np.log(Rs_meas),
+        0.5*(np.log(pred["Xj"]) - np.log(Xj_meas)),
+    ])
+
+res = least_squares(residuals, theta0, bounds=(lower, upper),
+                    method="trf", x_scale="jac", max_nfev=10000)
+</code></pre>
+  <p class="ref">See <a href="python/physics_model.py">python/physics_model.py</a>,
+    <a href="python/nn_model.py">python/nn_model.py</a>,
+    <a href="python/hybrid_model.py">python/hybrid_model.py</a>.</p>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="step3">
+  <h1>Step 3 &mdash; Evaluate everywhere, score honestly</h1>
+  <p>
+    With the surrogate fit we can query any recipe in microseconds. The
+    honest test is a held-out set drawn fresh from the same input box
+    plus a deliberately out-of-box stress test that pushes temperature
+    5% past the training upper bound.
+  </p>
+
+  <h3>Hold-out parity (predicted vs. true $R_s$)</h3>
+  <div id="plot-parity" class="plot tall"></div>
+
+  <h3>Scoreboard</h3>
+  <div id="scoreboard" class="card"></div>
+
+  <h3>1-D slice: $R_s$ vs anneal temperature at the optimized recipe</h3>
+  <p>
+    Fixing dose / time / pressure at the values the optimizer (Step 4)
+    chose, we sweep temperature. The shaded region marks the
+    extrapolation zone above the training upper bound — note where the
+    black-box NN diverges from truth.
+  </p>
+  <div id="plot-tscan" class="plot tall"></div>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="step4">
+  <h1>Step 4 &mdash; Optimize the recipe under real constraints</h1>
+  <p>
+    A surrogate that's cheap to call lets us put the constraints
+    <em>inside</em> the optimizer rather than catching violations after
+    the fact.
+  </p>
+
+  <div class="card eqcard">
+    <h3>Optimization problem</h3>
+    <p>$$\min_{\text{dose},T,t,P}\;\bigl(R_s(\text{dose},T,t,P)-R_s^{\text{target}}\bigr)^{2}$$</p>
+    <p>subject to</p>
+    <p>$$X_j(\text{dose},T,t,P) \le X_j^{\max},\quad T\cdot t \le \text{TB}^{\max},\quad \text{knobs in their bounds.}$$</p>
+    <p>Solved with SLSQP from many random restarts to dodge local minima.</p>
+  </div>
+
+  <h3>Recommended recipe (hybrid surrogate)</h3>
+  <div id="recipe-card" class="card recipe"></div>
+
+  <h3>Code</h3>
+<pre><code class="lang-python">cons = [
+    {"type": "ineq", "fun": lambda x: XJ_MAX - predict_fn(_df(x))["Xj"][0]},
+    {"type": "ineq", "fun": lambda x: THERMAL_BUDGET_MAX - x[1]*x[2]},
+]
+
+def objective(x):
+    return (predict_fn(_df(x))["Rs"][0] - RS_TARGET)**2
+
+res = minimize(objective, x0, method="SLSQP",
+               bounds=bounds, constraints=cons,
+               options={"maxiter": 200, "ftol": 1e-9})
+</code></pre>
+  <p class="ref">See <a href="python/optimize_recipe.py">python/optimize_recipe.py</a>.</p>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="tradeoffs">
+  <h1>Tradeoffs &mdash; physics vs. black-box vs. hybrid</h1>
+
+  <table class="compare">
+    <thead>
+      <tr><th></th><th>Physics</th><th>Black-box NN</th><th>Hybrid</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Sample efficiency (works at $N{=}20$)</td>
+          <td class="good">Excellent</td><td class="bad">Poor</td><td class="good">Excellent</td></tr>
+      <tr><td>Captures unmodeled effects (tool drift, chamber state)</td>
+          <td class="bad">No</td><td class="good">Yes</td><td class="good">Yes</td></tr>
+      <tr><td>Extrapolation outside training box</td>
+          <td class="good">Graceful</td><td class="bad">Diverges</td><td class="okay">Bounded by physics</td></tr>
+      <tr><td>Interpretability (each coefficient has units)</td>
+          <td class="good">Full</td><td class="bad">None</td><td class="okay">Physics core only</td></tr>
+      <tr><td>Audit / qualification burden</td>
+          <td class="good">Low</td><td class="bad">High</td><td class="okay">Medium</td></tr>
+      <tr><td>Recovers from concept drift after retraining</td>
+          <td class="okay">Coefficient refit</td><td class="good">Yes (with data)</td><td class="good">Yes (residual refit)</td></tr>
+      <tr><td>Right answer when fundamentally new chemistry appears</td>
+          <td class="bad">No (form is wrong)</td><td class="okay">Eventually</td><td class="bad">No (until form updated)</td></tr>
+    </tbody>
+  </table>
+
+  <p class="quote">
+    The shortest honest summary: <em>let the physics carry the
+    derivative, let the network carry the residual.</em>
+  </p>
+</section>
+
+<!-- ====================================================================== -->
+<section class="step" data-step="ai">
+  <h1>Where AI models and agents fit in the live fab</h1>
+
+  <h2>During fitting (off-line)</h2>
+  <ul>
+    <li><strong>Form proposal.</strong> An LLM-backed agent reads recent
+      process notes, defect-engineering literature, and the existing
+      compact-model library, and proposes candidate functional forms
+      (e.g. add a $\sqrt{t}$ transient-enhanced-diffusion term) for the
+      modeling engineer to accept or reject.</li>
+    <li><strong>Bayesian active learning.</strong> A Gaussian-process
+      acquisition agent looks at the current surrogate's uncertainty
+      map and recommends the next 2–5 expensive simulations or split-lot
+      wafers to run. This typically cuts the wafer cost of a calibrated
+      model by 3–5x relative to a fixed DOE.</li>
+    <li><strong>Symbolic regression.</strong> Tools like PySR or
+      AI-Feynman search a constrained algebra of physically-meaningful
+      operators for terms the human compact model is missing — useful
+      for catching second-order effects before they become yield
+      excursions.</li>
+    <li><strong>Coefficient sanity agent.</strong> A guardrail LLM checks
+      that fitted activation energies, prefactors, and exponents fall
+      within tabulated physical ranges and flags fits that "succeeded
+      numerically but lied physically."</li>
+  </ul>
+
+  <h2>At deployment (on-line, in the fab)</h2>
+  <ul>
+    <li><strong>Inline virtual metrology.</strong> The surrogate is
+      evaluated per-wafer using FDC (fault detection &amp; classification)
+      sensor traces — chamber pressure, RF power, gas flow integrals,
+      pyrometer profile — to predict $R_s$ and $X_j$ before the wafer
+      ever reaches the four-point-probe or SIMS step. Coverage goes from
+      ~1% sampled to 100% predicted.</li>
+    <li><strong>Run-to-run (R2R) control.</strong> A controller agent
+      reads predicted-vs-target offsets and dispatches small recipe
+      tweaks (e.g. $\Delta T$ = +2 K, $\Delta t$ = -0.3 s) wafer-by-wafer
+      to hold $R_s$ on its $C_{pk}$ target. The constrained optimizer
+      in Step 4 is the inner loop.</li>
+    <li><strong>Drift &amp; chamber-matching detection.</strong> An
+      anomaly agent monitors the residual NN's output magnitude
+      per chamber. When residuals on one chamber drift away from the
+      fleet median, it flags a maintenance event before the SPC chart
+      does.</li>
+    <li><strong>Conversational fab co-pilot.</strong> A retrieval-augmented
+      LLM gives process engineers natural-language access to the
+      surrogate: <em>"What's the cheapest recipe change that brings
+      lot A47 back inside the $R_s$ window without violating thermal
+      budget?"</em> The LLM frames the question; the constrained
+      optimizer answers it; the LLM explains the answer.</li>
+    <li><strong>Yield-impact propagation.</strong> A planning agent
+      chains the RTA surrogate into downstream device-level models
+      ($V_t$, $I_{on}$, leakage) so that an out-of-spec $R_s$ is
+      converted into a parametric-yield delta, not just a process
+      excursion.</li>
+  </ul>
+
+  <h2>What we deliberately do <em>not</em> let the agents do</h2>
+  <ul>
+    <li>Touch the recipe directly without a human-approved change-control
+      ticket on lots that are not engineering-flagged.</li>
+    <li>Replace a calibrated compact model with a black-box surrogate
+      that lacks a physical interpretation, except for residual
+      correction.</li>
+    <li>Extrapolate KPIs into recipe regions where the surrogate's
+      uncertainty exceeds the SPC tolerance.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer>
+  <p>Worked example only. No proprietary data or tool-vendor specifics.
+     Source code in this repo: <code>python/</code> (pipeline) &amp;
+     <code>assets/</code> (this site).</p>
+</footer>
+
+<script src="assets/js/app.js"></script>
+</body>
+</html>
